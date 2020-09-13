@@ -7,6 +7,7 @@ export AWS_DEFAULT_REGION=ap-northeast-1
 S3_BUCKET_NAME := member-only-static-content-dev
 S3_BUCKET_JSON := s3-bucket-dev.output.json
 CLOUDFRONT_JSON := cloudfront-dev.output.json
+CLOUDFRONT_OAI_COMMENT := oai-$(S3_BUCKET_NAME)
 
 ################################################################################
 # マクロ
@@ -14,6 +15,8 @@ CLOUDFRONT_JSON := cloudfront-dev.output.json
 # Make taskの実行
 # $(1): makeのtask
 define make-task
+@echo ''
+@echo ''
 @echo '--------------------------------------------[ $(1) ]'
 @export AWS_PAGER='' && make --no-print-directory $(1)
 endef
@@ -40,9 +43,11 @@ up:
 .PHONY: down
 down:
 	$(call make-task,delete-cloudfront)
+	$(call make-task,delete-oai)
 	$(call make-task,delete-website)
 	$(call make-task,empty-s3-bucket)
 	$(call make-task,delete-s3-bucket)
+	rm -f *.output.json
 
 ##################################################
 # タスク【S3】
@@ -73,7 +78,9 @@ delete-s3-bucket: ## down s3バケットの削除
 
 .PHONY: upload-content
 upload-content: ## up S3バケットにコンテンツをアップロード
+	aws s3api put-public-access-block --bucket $(S3_BUCKET_NAME) --public-access-block-configuration BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false
 	aws s3 cp index.html s3://$(S3_BUCKET_NAME)/ --acl public-read
+	aws s3 cp member-only.html s3://$(S3_BUCKET_NAME)/ --acl public-read
 .PHONY: empty-s3-bucket
 empty-s3-bucket: ## down S3バケットにあるコンテンツを全て削除
 	aws s3 rm s3://$(S3_BUCKET_NAME)/ --recursive
@@ -151,7 +158,7 @@ delete-cloudfront: ## down CloudFront(CDN)の削除
 .PHONY: restrict-s3-bucket-access
 restrict-s3-bucket-access: ## up 直接S3バケットへのアクセスを禁止、CloudFront限定にする
 	$(eval OAI := $(shell aws cloudfront create-cloud-front-origin-access-identity \
-		--cloud-front-origin-access-identity-config CallerReference=access-identity-$(S3_BUCKET_NAME),Comment=access-identity-$(S3_BUCKET_NAME) | jq -c '.'))
+		--cloud-front-origin-access-identity-config CallerReference=access-identity-$(S3_BUCKET_NAME),Comment=$(CLOUDFRONT_OAI_COMMENT) | jq -c '.'))
 	$(eval OAI_ID := $(shell echo '$(OAI)' | jq -r '.CloudFrontOriginAccessIdentity.Id'))
 	$(eval S3_BUCKET_POLICY := $(shell echo '{ \
 		"Statement": [{ \
@@ -190,8 +197,8 @@ restrict-s3-bucket-access: ## up 直接S3バケットへのアクセスを禁止
 		| jq '.Origins.Items |= $(ORIGINS_ITEMS)' \
 		| jq '.DefaultCacheBehavior.TargetOriginId |= "$(ORIGIN_ID)"' \
 		| jq -crS '.'))
-	aws s3api put-public-access-block --bucket $(S3_BUCKET_NAME) --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 	aws s3api put-bucket-policy --bucket $(S3_BUCKET_NAME) --policy '$(S3_BUCKET_POLICY)'
+	aws s3api put-public-access-block --bucket $(S3_BUCKET_NAME) --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 	@if [ '$(OLD_CONFIG)' != '$(NEW_CONFIG)' ]; then \
 		aws cloudfront create-invalidation --distribution-id $(CLOUDFRONT_ID) --paths "/*"; \
 		aws cloudfront update-distribution --id $(CLOUDFRONT_ID) --if-match $(ETAG) --distribution-config '$(NEW_CONFIG)' > /dev/null; \
@@ -206,7 +213,16 @@ restrict-s3-bucket-access: ## up 直接S3バケットへのアクセスを禁止
 	@echo 'Access!!'
 	@cat $(CLOUDFRONT_JSON) | jq '.DomainName' | xargs -I {domain} echo 'http://{domain}'
 
-
+.PHONY: delete-oai
+delete-oai: ## down CloudFrontのOriginAccessIdentityを削除(使われてない必要がある)
+	$(eval OAI_ID := $(shell aws cloudfront list-cloud-front-origin-access-identities \
+		| jq '.CloudFrontOriginAccessIdentityList.Items' \
+		| jq -r '.[] | select(.Comment == "$(CLOUDFRONT_OAI_COMMENT)").Id' \
+	))
+	$(eval OAI_ETAG := $(shell aws cloudfront get-cloud-front-origin-access-identity --id $(OAI_ID) \
+		| jq -r '.ETag' \
+	))
+	aws cloudfront delete-cloud-front-origin-access-identity --id $(OAI_ID) --if-match $(OAI_ETAG)
 
 
 ##################################################
@@ -250,6 +266,8 @@ help: ## Make タスク一覧
 	@echo '# $$ make XXX'
 	@echo '# or'
 	@echo '# $$ make XXX --dry-run'
+	@echo '# downシリーズだけ見たい時'
+	@echo '# $$ make help | grep "down"'
 	@echo '######################################################################'
 	@echo $(MAKEFILE_LIST) \
 	| tr ' ' '\n' \
