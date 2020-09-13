@@ -17,3 +17,7 @@ include makefiles/help.mk
 .PHONY: deploy-docs
 deploy-docs: ## ドキュメントをデプロイする
 	git subtree push --prefix docs/html/ origin gh-pages
+
+.PHONY: nginx
+nginx: ## ドキュメントをデプロイする
+	docker run --rm -it --mount type=bind,source=$(PWD)/awscli-edition/,target=/usr/share/nginx/html/ --publish 80:80 nginx:stable
