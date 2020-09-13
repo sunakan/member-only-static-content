@@ -1,0 +1,23 @@
+== 依存コマンド
+
+* aws
+* jq
+* openssl
+* GNU Make
+
+== 実行
+
+.立ち上げ
+----
+$ make up
+----
+
+.片付け
+----
+$ make down
+----
+
+.help
+----
+$ make help
+----

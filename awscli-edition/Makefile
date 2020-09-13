@@ -40,6 +40,7 @@ up:
 	$(call make-task,publish-website)
 	$(call make-task,create-cloudfront)
 	$(call make-task,restrict-s3-bucket-access)
+	$(call make-task,restrict-private-content)
 
 .PHONY: down
 down:
@@ -215,8 +216,6 @@ restrict-s3-bucket-access: ## up 直接S3バケットへのアクセスを禁止
 	@echo 'Access!!'
 	@cat $(CLOUDFRONT_JSON) | jq '.DomainName' | xargs -I {domain} echo 'http://{domain}'
 
-
-
 .PHONY: delete-oai
 delete-oai: ## down CloudFrontのOriginAccessIdentityを削除(使われてない必要がある)
 	$(eval OAI_ID := $(shell aws cloudfront list-cloud-front-origin-access-identities \
@@ -227,6 +226,10 @@ delete-oai: ## down CloudFrontのOriginAccessIdentityを削除(使われてな�
 		| jq -r '.ETag' \
 	))
 	aws cloudfront delete-cloud-front-origin-access-identity --id $(OAI_ID) --if-match $(OAI_ETAG)
+
+
+
+
 
 .PHONY: restrict-private-content
 restrict-private-content: ## up 特定のコンテンツをメンバー限定にする
@@ -259,6 +262,8 @@ restrict-private-content: ## up 特定のコンテンツをメンバー限定に
 	else \
 		echo 'CloudFrontのOriginのDistributionConfig.CacheBehaviorsに変更がないので、更新しません'; \
 	fi
+
+
 
 ##################################################
 # Option
@@ -293,6 +298,23 @@ clear-cache: ## option CloudFrontのキャッシュを全削除
 	else \
 		echo 'CloudFrontが見つかりません'; \
 	fi
+
+.PHONY: confirm-active-trusted-signers
+confirm-active-trusted-signers: ## option CloudFront API を使用して、信頼された署名者が有効であることを確認する
+	$(eval CLOUDFRONT_ID := $(shell aws cloudfront list-distributions \
+		| jq '.DistributionList.Items' \
+		| jq -c '.[] | select(.Origins.Items[].DomainName | contains("$(S3_BUCKET_NAME)"))' \
+		| jq -r '.Id' \
+	))
+	aws cloudfront get-distribution --id $(CLOUDFRONT_ID) \
+		| jq '.Distribution.ActiveTrustedSigners'
+
+.PHONY: create-cloudfront-keypair
+create-cloudfront-keypair: ## option CloudFrontに使うキーペアを作成（登録にはrootアカウントでする必要がある）
+	openssl genrsa -out private_key.pem 4096
+	openssl rsa -pubout -in private_key.pem -out public_key.pem
+
+
 
 .PHONY: help
 help: ## Make タスク一覧
