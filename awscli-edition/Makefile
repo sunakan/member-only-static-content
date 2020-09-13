@@ -8,6 +8,7 @@ S3_BUCKET_NAME := member-only-static-content-dev
 S3_BUCKET_JSON := s3-bucket-dev.output.json
 CLOUDFRONT_JSON := cloudfront-dev.output.json
 CLOUDFRONT_OAI_COMMENT := oai-$(S3_BUCKET_NAME)
+ORIGIN_ID := S3-$(S3_BUCKET_NAME)
 
 ################################################################################
 # マクロ
@@ -174,7 +175,6 @@ restrict-s3-bucket-access: ## up 直接S3バケットへのアクセスを禁止
 		| jq -r '.Id'))
 	$(eval CONFIG := $(shell aws cloudfront get-distribution-config --id $(CLOUDFRONT_ID) | jq -c '.'))
 	$(eval ETAG := $(shell echo '$(CONFIG)' | jq -r '.ETag'))
-	$(eval ORIGIN_ID := S3-$(S3_BUCKET_NAME))
 	$(eval S3_ORIGIN_CONFIG := $(shell echo '{ \
 		"Id": "$(ORIGIN_ID)", \
 		"DomainName": "$(S3_BUCKET_NAME).s3.amazonaws.com", \
@@ -188,23 +188,25 @@ restrict-s3-bucket-access: ## up 直接S3バケットへのアクセスを禁止
 		"ConnectionAttempts": 3, \
 		"ConnectionTimeout": 10 \
 	}'))
-	$(eval ORIGINS_ITEMS := $(shell echo '[$(S3_ORIGIN_CONFIG)]'))
-	$(eval ORIGIN_QUANTITY := $(shell echo '$(ORIGINS_ITEMS)' | jq -r '. | length'))
-	$(eval OLD_CONFIG := $(shell echo '$(CONFIG)' \
-		| jq -crS '.DistributionConfig'))
+	$(eval OLD_ORIGINS := $(shell echo '$(CONFIG)' \
+		| jq -crS '.DistributionConfig.Origins' \
+	))
+	$(eval NEW_ORIGINS := $(shell echo '$(OLD_ORIGINS)' \
+		| jq '.Quantity |= 1' \
+		| jq -crS '.Items |= [$(S3_ORIGIN_CONFIG)]' \
+	))
 	$(eval NEW_CONFIG := $(shell echo '$(OLD_CONFIG)' \
-		| jq '.Origins.Quantity |= $(ORIGIN_QUANTITY)' \
-		| jq '.Origins.Items |= $(ORIGINS_ITEMS)' \
+		| jq '.Origins |= $(NEW_ORIGINS)' \
 		| jq '.DefaultCacheBehavior.TargetOriginId |= "$(ORIGIN_ID)"' \
 		| jq -crS '.'))
 	aws s3api put-bucket-policy --bucket $(S3_BUCKET_NAME) --policy '$(S3_BUCKET_POLICY)'
 	aws s3api put-public-access-block --bucket $(S3_BUCKET_NAME) --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-	@if [ '$(OLD_CONFIG)' != '$(NEW_CONFIG)' ]; then \
+	@if [ '$(OLD_ORIGINS)' != '$(NEW_ORIGINS)' ]; then \
 		aws cloudfront create-invalidation --distribution-id $(CLOUDFRONT_ID) --paths "/*"; \
 		aws cloudfront update-distribution --id $(CLOUDFRONT_ID) --if-match $(ETAG) --distribution-config '$(NEW_CONFIG)' > /dev/null; \
 		aws cloudfront wait distribution-deployed --id $(CLOUDFRONT_ID); \
 	else \
-		echo 'CloudFrontのOriginのDistributionConfigに変更がないので、更新しません'; \
+		echo 'CloudFrontのOriginのDistributionConfig.Originsに変更がないので、更新しません'; \
 	fi
 	@make --no-print-directory output-cloudfront
 	@echo 'Ouputted $(CLOUDFRONT_JSON)'
@@ -212,6 +214,8 @@ restrict-s3-bucket-access: ## up 直接S3バケットへのアクセスを禁止
 	@echo 'http://$(S3_BUCKET_NAME).s3-website-$(AWS_DEFAULT_REGION).amazonaws.com'
 	@echo 'Access!!'
 	@cat $(CLOUDFRONT_JSON) | jq '.DomainName' | xargs -I {domain} echo 'http://{domain}'
+
+
 
 .PHONY: delete-oai
 delete-oai: ## down CloudFrontのOriginAccessIdentityを削除(使われてない必要がある)
@@ -224,6 +228,37 @@ delete-oai: ## down CloudFrontのOriginAccessIdentityを削除(使われてな�
 	))
 	aws cloudfront delete-cloud-front-origin-access-identity --id $(OAI_ID) --if-match $(OAI_ETAG)
 
+.PHONY: restrict-private-content
+restrict-private-content: ## up 特定のコンテンツをメンバー限定にする
+	$(eval CLOUDFRONT_ID := $(shell aws cloudfront list-distributions \
+		| jq '.DistributionList.Items' \
+		| jq -c '.[] | select(.Origins.Items[].DomainName | contains("$(S3_BUCKET_NAME)"))' \
+		| jq -r '.Id'))
+	$(eval CONFIG := $(shell aws cloudfront get-distribution-config --id $(CLOUDFRONT_ID) | jq -c '.'))
+	$(eval ETAG := $(shell echo '$(CONFIG)' | jq -r '.ETag'))
+	$(eval CACHE_BEHAVIOR_ITEM := $(shell cat cache-behavior.template.json \
+		| jq '.PathPattern |= "member-only.html"' \
+		| jq -c '.TargetOriginId |= "$(ORIGIN_ID)"' \
+	))
+	$(eval OLD_CACHE_BEHAVIORS := $(shell echo '$(CONFIG)' \
+		| jq -crS '.DistributionConfig.CacheBehaviors'))
+	$(eval NEW_CACHE_BEHAVIORS := $(shell echo '$(OLD_CACHE_BEHAVIORS)' \
+		| jq '.Items |= [$(CACHE_BEHAVIOR_ITEM)]' \
+		| jq '.Quantity |= 1' \
+		| jq -crS '.' \
+	))
+	$(eval NEW_CONFIG := $(shell echo '$(OLD_CONFIG)' \
+		| jq '.DistributionConfig' \
+		| jq '.CacheBehaviors |= $(NEW_CACHE_BEHAVIORS)' \
+		| jq -crS '.' \
+	))
+	@if [ '$(OLD_CACHE_BEHAVIORS)' != '$(NEW_CACHE_BEHAVIORS)' ]; then \
+		aws cloudfront create-invalidation --distribution-id $(CLOUDFRONT_ID) --paths "/*"; \
+		aws cloudfront update-distribution --id $(CLOUDFRONT_ID) --if-match $(ETAG) --distribution-config '$(NEW_CONFIG)' > /dev/null; \
+		aws cloudfront wait distribution-deployed --id $(CLOUDFRONT_ID); \
+	else \
+		echo 'CloudFrontのOriginのDistributionConfig.CacheBehaviorsに変更がないので、更新しません'; \
+	fi
 
 ##################################################
 # Option
