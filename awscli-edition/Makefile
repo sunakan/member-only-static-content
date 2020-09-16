@@ -10,6 +10,7 @@ CLOUDFRONT_JSON := cloudfront-dev.output.json
 CLOUDFRONT_OAI_COMMENT := oai-$(S3_BUCKET_NAME)
 ORIGIN_ID := S3-$(S3_BUCKET_NAME)
 
+
 ################################################################################
 # マクロ
 ################################################################################
@@ -263,6 +264,30 @@ restrict-private-content: ## up 特定のコンテンツをメンバー限定に
 		echo 'CloudFrontのOriginのDistributionConfig.CacheBehaviorsに変更がないので、更新しません'; \
 	fi
 
+
+.PHONY: add-custom-error-page
+add-custom-error-page: ## up カスタムエラーページの追加
+	$(eval CLOUDFRONT_ID := $(shell aws cloudfront list-distributions \
+		| jq '.DistributionList.Items' \
+		| jq -c '.[] | select(.Origins.Items[].DomainName | contains("$(S3_BUCKET_NAME)"))' \
+		| jq -r '.Id'))
+	$(eval CONFIG := $(shell aws cloudfront get-distribution-config --id $(CLOUDFRONT_ID) | jq -c '.'))
+	$(eval ETAG := $(shell echo '$(CONFIG)' | jq -r '.ETag'))
+	$(eval CURRENT_CUSTOM_ERROR_RESPONSES := $(shell echo '$(CONFIG)' | jq -crS '.DistributionConfig.CustomErrorResponses'))
+	$(eval NEW_CUSTOM_ERROR_RESPONSES := $(shell cat custom-error-responses.json | jq -crS '.'))
+	$(eval NEW_CONFIG := $(shell echo '$(CONFIG)' \
+		| jq '.DistributionConfig' \
+		| jq '.CustomErrorResponses |= $(NEW_CUSTOM_ERROR_RESPONSES)' \
+		| jq -crS '.' \
+	))
+	aws s3 cp error-404.html s3://$(S3_BUCKET_NAME)/ --acl public-read
+	aws s3 cp error-403.html s3://$(S3_BUCKET_NAME)/ --acl public-read
+	@if [ '$(CURRENT_CUSTOM_ERROR_RESPONSES)' != '$(NEW_CUSTOM_ERROR_RESPONSES)' ]; then \
+		aws cloudfront update-distribution --id $(CLOUDFRONT_ID) --if-match $(ETAG) --distribution-config '$(NEW_CONFIG)' > /dev/null; \
+		aws cloudfront wait distribution-deployed --id $(CLOUDFRONT_ID); \
+	else \
+		echo 'CloudFrontのOriginのDistributionConfig.CustomErrorResponsesが変更がないので、更新しません'; \
+	fi
 
 
 ##################################################

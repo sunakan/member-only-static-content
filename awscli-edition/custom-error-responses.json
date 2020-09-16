@@ -1,0 +1,17 @@
+{
+  "Quantity": 2,
+  "Items": [
+    {
+      "ErrorCode": 403,
+      "ResponsePagePath": "/error-403.html",
+      "ResponseCode": "403",
+      "ErrorCachingMinTTL": 10
+    },
+    {
+      "ErrorCode": 404,
+      "ResponsePagePath": "/error-404.html",
+      "ResponseCode": "404",
+      "ErrorCachingMinTTL": 10
+    }
+  ]
+}
