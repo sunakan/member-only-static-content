@@ -1,0 +1,12 @@
+{
+  "Statement": [
+    {
+      "Resource": "{{ CLOUDFRONT_URL_PATH_PATTERN }}",
+      "Condition": {
+        "DateLessThan": {
+          "AWS:EpochTime": "{{ EPOC_TIME }}"
+        }
+      }
+    }
+  ]
+}
