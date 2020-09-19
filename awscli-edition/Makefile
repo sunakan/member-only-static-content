@@ -9,6 +9,11 @@ S3_BUCKET_JSON := s3-bucket-dev.output.json
 CLOUDFRONT_JSON := cloudfront-dev.output.json
 CLOUDFRONT_OAI_COMMENT := oai-$(S3_BUCKET_NAME)
 ORIGIN_ID := S3-$(S3_BUCKET_NAME)
+APIGATEWAY_NAME := member-only-static-content-dev
+
+# 事前にsecret managerで登録した名前
+# (rootアカウントでCloudFront用のキーペア作成 => 手動でSecretManagerに登録)
+CLOUDFRONT_SECRET_ID := cloudfront-pem-1
 
 
 ################################################################################
@@ -42,6 +47,7 @@ up:
 	$(call make-task,create-cloudfront)
 	$(call make-task,restrict-s3-bucket-access)
 	$(call make-task,restrict-private-content)
+	$(call make-task,add-custom-error-page)
 
 .PHONY: down
 down:
@@ -197,7 +203,8 @@ restrict-s3-bucket-access: ## up 直接S3バケットへのアクセスを禁止
 		| jq '.Quantity |= 1' \
 		| jq -crS '.Items |= [$(S3_ORIGIN_CONFIG)]' \
 	))
-	$(eval NEW_CONFIG := $(shell echo '$(OLD_CONFIG)' \
+	$(eval NEW_CONFIG := $(shell echo '$(CONFIG)' \
+		| jq '.DistributionConfig' \
 		| jq '.Origins |= $(NEW_ORIGINS)' \
 		| jq '.DefaultCacheBehavior.TargetOriginId |= "$(ORIGIN_ID)"' \
 		| jq -crS '.'))
@@ -230,8 +237,6 @@ delete-oai: ## down CloudFrontのOriginAccessIdentityを削除(使われてな�
 
 
 
-
-
 .PHONY: restrict-private-content
 restrict-private-content: ## up 特定のコンテンツをメンバー限定にする
 	$(eval CLOUDFRONT_ID := $(shell aws cloudfront list-distributions \
@@ -251,7 +256,7 @@ restrict-private-content: ## up 特定のコンテンツをメンバー限定に
 		| jq '.Quantity |= 1' \
 		| jq -crS '.' \
 	))
-	$(eval NEW_CONFIG := $(shell echo '$(OLD_CONFIG)' \
+	$(eval NEW_CONFIG := $(shell echo '$(CONFIG)' \
 		| jq '.DistributionConfig' \
 		| jq '.CacheBehaviors |= $(NEW_CACHE_BEHAVIORS)' \
 		| jq -crS '.' \
@@ -280,14 +285,21 @@ add-custom-error-page: ## up カスタムエラーページの追加
 		| jq '.CustomErrorResponses |= $(NEW_CUSTOM_ERROR_RESPONSES)' \
 		| jq -crS '.' \
 	))
+	aws s3api put-public-access-block --bucket $(S3_BUCKET_NAME) --public-access-block-configuration BlockPublicAcls=false
 	aws s3 cp error-404.html s3://$(S3_BUCKET_NAME)/ --acl public-read
 	aws s3 cp error-403.html s3://$(S3_BUCKET_NAME)/ --acl public-read
+	aws s3api put-public-access-block --bucket $(S3_BUCKET_NAME) --public-access-block-configuration BlockPublicAcls=true
 	@if [ '$(CURRENT_CUSTOM_ERROR_RESPONSES)' != '$(NEW_CUSTOM_ERROR_RESPONSES)' ]; then \
 		aws cloudfront update-distribution --id $(CLOUDFRONT_ID) --if-match $(ETAG) --distribution-config '$(NEW_CONFIG)' > /dev/null; \
 		aws cloudfront wait distribution-deployed --id $(CLOUDFRONT_ID); \
 	else \
 		echo 'CloudFrontのOriginのDistributionConfig.CustomErrorResponsesが変更がないので、更新しません'; \
 	fi
+
+.PHONY: create-apigateway
+create-apigateway: ## API GatewayでAPIの元を作成
+	aws create-rest-api --name $(APIGATEWAY_NAME)
+
 
 
 ##################################################
@@ -311,6 +323,7 @@ get-website: ## option s3バケットに公開中のwebsiteの情報を取得
 
 .PHONY: list-cloudfront
 list-cloudfront: ## option CloudFrontのリスト
+	aws cloudfront list-distributions
 
 .PHONY: clear-cache
 clear-cache: ## option CloudFrontのキャッシュを全削除
@@ -339,7 +352,50 @@ create-cloudfront-keypair: ## option CloudFrontに使うキーペアを作成（
 	openssl genrsa -out private_key.pem 4096
 	openssl rsa -pubout -in private_key.pem -out public_key.pem
 
+.PHONY: list-secrets
+list-secrets: ## option シークレットマネージャの一覧
+	aws secretsmanager list-secrets
 
+.PHONY: get-cloudfront-secret-key-pair
+get-cloudfront-secret-key-pair: ## option シークレットマネージャで登録されているか確認
+	aws secretsmanager get-secret-value --secret-id $(CLOUDFRONT_SECRET_ID) \
+		| jq -rc '.SecretString'
+
+.PHONY: try-curl-singned-cookie
+try-curl-singned-cookie: ## option 署名付きCookieを生成してcurlをお試し
+	$(eval EPOC_TIME := $(shell date -u --date='2021-01-01 00:00:00' +%s))
+	$(eval DOMAIN_NAME := $(shell aws cloudfront list-distributions \
+		| jq '.DistributionList.Items' \
+		| jq -rc '.[] | select(.Origins.Items[].DomainName | contains("$(S3_BUCKET_NAME)")).DomainName' \
+	))
+	$(eval CLOUDFRONT_SECRET_KEY_PAIR := $(shell aws secretsmanager get-secret-value --secret-id $(CLOUDFRONT_SECRET_ID) | jq -rcS '.SecretString'))
+	$(eval CLOUDFRONT_KEY_PAIR_ID := $(shell echo '$(CLOUDFRONT_SECRET_KEY_PAIR)' | jq -rc '.cloudfront_key_pair_id'))
+	@echo '$(CLOUDFRONT_SECRET_KEY_PAIR)' | jq -rc '.pem_base64' | sed 's/ /\n/g' | openssl enc -d -base64 > /tmp/$(CLOUDFRONT_SECRET_ID).pem
+	@if [ -n '$(DOMAIN_NAME)' ]; then \
+		base64_custom_policy=$$(cat ./policy.json \
+			| jq '.Statement[0].Resource |= "https://$(DOMAIN_NAME)/member-only.html"' \
+			| jq '.Statement[0].Condition.DateLessThan["AWS:EpochTime"] |= $(EPOC_TIME)' \
+			| jq -rc '.' \
+			| openssl base64 \
+			| tr '+=/' '-_~' \
+			| tr -d "\n" \
+		); \
+		cloudfront_signature=$$(cat ./policy.json \
+			| jq '.Statement[0].Resource |= "https://$(DOMAIN_NAME)/member-only.html"' \
+			| jq '.Statement[0].Condition.DateLessThan["AWS:EpochTime"] |= $(EPOC_TIME)' \
+			| jq -rc '.' \
+			| openssl sha1 -sign /tmp/$(CLOUDFRONT_SECRET_ID).pem \
+			| openssl base64 \
+			| tr '+=/' '-_~' \
+			| tr -d "\n" \
+		); \
+		echo curl -H \""Cookie:CloudFront-Policy=$${base64_custom_policy}; CloudFront-Signature=$${cloudfront_signature}; CloudFront-Key-Pair-Id=$(CLOUDFRONT_KEY_PAIR_ID)"\" https://$(DOMAIN_NAME)/member-only.html; \
+		echo '-----'; \
+		curl -H "Cookie:CloudFront-Policy=$${base64_custom_policy}; CloudFront-Signature=$${cloudfront_signature}; CloudFront-Key-Pair-Id=$(CLOUDFRONT_KEY_PAIR_ID)" https://$(DOMAIN_NAME)/member-only.html; \
+		echo ''; \
+	else \
+		echo 'CloudFrontがありません'; \
+	fi
 
 .PHONY: help
 help: ## Make タスク一覧
