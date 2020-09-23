@@ -48,6 +48,7 @@ up:
 	$(call make-task,restrict-s3-bucket-access)
 	$(call make-task,restrict-private-content)
 	$(call make-task,add-custom-error-page)
+	$(call make-task,create-apigateway)
 
 .PHONY: down
 down:
@@ -56,6 +57,7 @@ down:
 	$(call make-task,delete-website)
 	$(call make-task,empty-s3-bucket)
 	$(call make-task,delete-s3-bucket)
+	$(call make-task,delete-apigateway)
 	rm -f *.output.json
 
 ##################################################
@@ -296,11 +298,27 @@ add-custom-error-page: ## up カスタムエラーページの追加
 		echo 'CloudFrontのOriginのDistributionConfig.CustomErrorResponsesが変更がないので、更新しません'; \
 	fi
 
+##################################################
+# タスク【APIGateway】
+##################################################
 .PHONY: create-apigateway
 create-apigateway: ## API GatewayでAPIの元を作成
-	aws create-rest-api --name $(APIGATEWAY_NAME)
+	$(eval REST_API := $(shell aws apigateway get-rest-apis | jq -rc '.items[] | select(.name == "$(APIGATEWAY_NAME)")'))
+	@if [ -z '$(REST_API)' ]; then \
+		aws apigateway create-rest-api --name $(APIGATEWAY_NAME); \
+	else \
+		echo '既に$(APIGATEWAY_NAME)は存在するので作成しません'; \
+	fi
+	$(eval REST_API := $(shell aws apigateway get-rest-apis | jq -rc '.items[] | select(.name == "$(APIGATEWAY_NAME)")'))
+	@echo -----
+	@echo '$(REST_API)'
+	@echo -----
 
-
+.PHONY: delete-apigateway
+delete-apigateway: ## down APIGatewayの削除
+	aws apigateway get-rest-apis \
+		| jq -r '.items[] | select(.name == "$(APIGATEWAY_NAME)").id' \
+		| xargs -I {api-id} aws apigateway delete-rest-api --rest-api-id {api-id}
 
 ##################################################
 # Option
