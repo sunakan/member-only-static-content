@@ -1,0 +1,52 @@
+== Serverless Framework
+
+.デプロイ
+----
+$ sls deploy
+----
+
+.デプロイ前
+----
+$ tree -a app/
+app/
+├── .gitignore
+├── handler.py
+├── README.adoc
+└── serverless.yml
+----
+
+.デプロイ後
+----
+$ tree -a app/
+app/
+├── .gitignore
+├── handler.py
+├── README.adoc
+├── .serverless
+│   ├── app.zip
+│   ├── cloudformation-template-create-stack.json
+│   ├── cloudformation-template-update-stack.json
+│   └── serverless-state.json
+└── serverless.yml
+----
+
+.削除
+----
+$ sls remove
+----
+
+.実行
+----
+$ sls invoke -f hello
+----
+
+=== メモ
+
+* デプロイはS3に一旦zipが行く
+** S3：app-dev-serverlessdeploymentbucket-xxxxxxxxx
+* デプロイのリージョンはデフォルト：米国東部 (バージニア北部) us-east-1
+* Amazon S3/app-dev-serverlessdeploymentbucket-xxxxxxxxxxxxx/serverless/app/dev/yyyyyyyyyyyyy-2020-MM-DDT:HH:MM.???Z以下に2ファイルができる
+** app.zipとcompiled-cloudformation-template.json
+* 更新してデプロイすると新しいフォルダができる。要は前のバージョンが残る
+** Amazon S3/app-dev-serverlessdeploymentbucket-xxxxxxxxxxxxx/serverless/app/dev/yyyyyyyyyyyyy-2020-MM-DDT:HH:MM.???Z
+*** app.zipとcompiled-cloudformation-template.json
