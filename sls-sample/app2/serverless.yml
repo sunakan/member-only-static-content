@@ -1,0 +1,20 @@
+service: app2
+frameworkVersion: '1'
+
+provider:
+  name: aws
+  runtime: python3.8
+#  stage: ${opt:stage, self:custom.defaultStage}
+#  region: ap-northeast-1
+#custom:
+#  defaultStage: dev
+#  environment:
+#    dev: ${file(./environments/development.yml)}
+#    stg: ${file(./environments/staging.yml)}
+#    prd: ${file(./environments/production.yml)}
+package:
+  exclude:
+    - README*
+functions:
+  hello:
+    handler: handler.hello

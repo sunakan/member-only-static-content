@@ -2,11 +2,14 @@ version: '3.8'
 services:
   sls:
     image: amaysim/serverless:1.82.0
-    working_dir: /opt/app/
+    working_dir: /opt/app2/
     volumes:
       - type: bind
         source: ${PWD}/app/
         target: /opt/app/
+      - type: bind
+        source: ${PWD}/app2/
+        target: /opt/app2/
       - type: bind
         source: ~/.aws/credentials
         target: /root/.aws/credentials
